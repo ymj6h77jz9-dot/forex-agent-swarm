@@ -12,10 +12,9 @@ import os
 import json
 import base64
 import re
-from openai import AsyncOpenAI
+from llm_client import llm_json
 import httpx
 
-client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 EMAIL_CLASSIFIER_PROMPT = """
 You are a forex market intelligence classifier. You receive the subject and body

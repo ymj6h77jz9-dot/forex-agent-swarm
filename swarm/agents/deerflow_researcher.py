@@ -30,10 +30,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 
-from openai import AsyncOpenAI
-
-logger = logging.getLogger(__name__)
-client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+from llm_client import llm_json, llm
 
 
 class SubagentStatus(Enum):
@@ -232,11 +229,7 @@ Provide a concise, fact-based analysis focused on:
 
 Be specific. No filler. Max 200 words.
 """
-        resp = await client.chat.completions.create(
-            model    = "gpt-4o-mini",
-            messages = [{"role": "user", "content": prompt}],
-            max_tokens = 300,
-        )
+        # replaced by llm_client
         tokens = resp.usage.total_tokens if resp.usage else 0
         self.token_count += tokens
         return resp.choices[0].message.content
@@ -277,15 +270,7 @@ CURRENT MARKET CONTEXT:
 Synthesize into a structured research brief. Return JSON only.
 """
         try:
-            resp = await client.chat.completions.create(
-                model           = "gpt-4o",
-                messages        = [
-                    {"role": "system", "content": RESEARCHER_SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompt},
-                ],
-                response_format = {"type": "json_object"},
-                temperature     = 0.2,
-            )
+            # replaced by llm_client
             return json.loads(resp.choices[0].message.content)
         except Exception as e:
             logger.error(f"[DeerFlow] Synthesis failed: {e}")

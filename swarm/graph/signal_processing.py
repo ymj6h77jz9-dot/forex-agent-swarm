@@ -12,11 +12,7 @@ Enhanced with: multi-agent weighted voting, MiroFish integration
 import logging
 import re
 from typing import Dict, Any, List, Optional, Tuple
-from openai import AsyncOpenAI
-import os
-
-logger = logging.getLogger(__name__)
-client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+from llm_client import llm_json, llm
 
 SIGNAL_EXTRACT_PROMPT = """
 You are a trading signal extractor. Given an analyst report or agent output,
@@ -78,7 +74,6 @@ class SignalProcessor:
         # LLM fallback
         try:
             resp = await client.chat.completions.create(
-                model    = "gpt-4o-mini",
                 messages = [
                     {"role": "system", "content": SIGNAL_EXTRACT_PROMPT},
                     {"role": "user",   "content": text[:2000]},
@@ -114,12 +109,10 @@ Rule on this debate.
 """
         try:
             resp = await client.chat.completions.create(
-                model           = "gpt-4o",
                 messages        = [
                     {"role": "system", "content": DEBATE_JUDGE_PROMPT},
                     {"role": "user",   "content": prompt},
                 ],
-                response_format = {"type": "json_object"},
                 temperature     = 0.2,
             )
             return json.loads(resp.choices[0].message.content)
@@ -145,12 +138,10 @@ Rule on position sizing and risk parameters.
 """
         try:
             resp = await client.chat.completions.create(
-                model           = "gpt-4o",
                 messages        = [
                     {"role": "system", "content": RISK_JUDGE_PROMPT},
                     {"role": "user",   "content": prompt},
                 ],
-                response_format = {"type": "json_object"},
                 temperature     = 0.1,
             )
             return json.loads(resp.choices[0].message.content)

@@ -12,11 +12,7 @@ Enhanced with: MemPalace memory storage, MiroFish accuracy tracking
 import json
 import logging
 from typing import Dict, Any, Optional
-from openai import AsyncOpenAI
-import os
-
-logger = logging.getLogger(__name__)
-client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+from llm_client import llm_json, llm
 
 REFLECTION_SYSTEM_PROMPT = """
 You are an expert forex trading analyst reviewing a completed trade decision cycle.
@@ -95,12 +91,10 @@ Analyze this trade cycle and return your structured reflection.
 """
         try:
             resp = await client.chat.completions.create(
-                model    = "gpt-4o",
                 messages = [
                     {"role": "system", "content": REFLECTION_SYSTEM_PROMPT},
                     {"role": "user",   "content": prompt},
                 ],
-                response_format = {"type": "json_object"},
                 temperature     = 0.3,
             )
             reflection = json.loads(resp.choices[0].message.content)
