@@ -1,77 +1,114 @@
 # 🤖 KRATOS v2 — Unified Agentic Forex Swarm
 
-A fully integrated multi-agent forex trading system that merges the architectures from all your GitHub repositories into a single, production-grade AI trading engine.
+A fully integrated multi-agent forex trading system that merges the architectures 
+from every relevant GitHub repository into a single, production-grade AI trading engine.
 
-## 📦 Repos Integrated
+## 📦 Repos Integrated (No Holding Back)
 
 | Repo | Architecture Contribution |
 |---|---|
-| **KRATOS-app** | KratosOrchestrator, DerivAdapter, ExecutionEngine, RiskManager |
-| **TradingAgents** | Propagator, Reflector, SignalProcessor, Bull/Bear Debate, Risk Debate |
-| **MiroFish** | PSO Swarm Intelligence Prediction Engine (probabilistic backbone) |
-| **mempalace** | BM25 Memory Palace — verbatim storage, findable retrieval |
-| **ruflo** | Multi-agent coordination, self-correction patterns |
-| **QuantDinger** | Multi-agent research framework, data provider abstraction |
-| **nautilus_trader** | Event-driven architecture, deterministic execution patterns |
-| **Kronos** | Financial language foundation model concepts |
+| **KRATOS-app** | `KratosOrchestrator`, `DerivAdapter` (WebSocket), `ExecutionEngine`, `RiskManager` |
+| **TradingAgents** | `Propagator`, `Reflector`, `SignalProcessor`, Bull/Bear Debate, Risk Debate, BM25 Memory |
+| **MiroFish** | PSO Particle Swarm Intelligence Engine (60 particles, 100 iterations) |
+| **mempalace** | BM25 Memory Palace — verbatim storage, wing/hall/room structure |
+| **Kronos** | Foundation Model for financial K-lines (NeoQuasar HuggingFace, 45+ exchanges) |
+| **tensortrade** | RL meta-agent environment — DQN reward loop, position sizing actions |
+| **deer-flow** | Long-horizon researcher, parallel subagent executor, loop detection, DeerFlow memory |
+| **QuantDinger** | Multi-agent research framework, multi-asset watchlist |
+| **OpenBB** | Unified financial data — candles, snapshots, economic calendar, macro indicators |
+| **Crucix** | Multi-source macro intelligence — FRED, BLS, news, regime detection |
+| **BB-Terminal** | Multi-pair forex dashboard (FXC component — all major pairs) |
+| **ruflo** | Multi-agent coordination, self-correction, consensus propagation patterns |
+| **nautilus_trader** | Event-driven deterministic execution architecture |
 
 ---
 
-## 🏗️ Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                   KRATOS v2 ORCHESTRATOR                         │
-│  (kratos_orchestrator.py)                                        │
-│                                                                  │
-│  ┌──────────────┐  ┌───────────────┐  ┌──────────────────────┐  │
-│  │  Propagator  │  │  MemPalace    │  │  MiroFish PSO Engine  │  │
-│  │ (AgentState  │  │  (BM25 memory │  │  (Particle Swarm     │  │
-│  │  broadcast)  │  │   palace)     │  │   prediction)        │  │
-│  └──────────────┘  └───────────────┘  └──────────────────────┘  │
-│                                                                  │
-│  ┌──────────────────────── AGENT ENSEMBLE ──────────────────┐   │
-│  │  AnalystAgent   SentimentAgent   RiskAgent   (parallel)  │   │
-│  │  (Technical)    (News+Gmail)     (VaR+Rules)             │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────────── DEBATE LAYER ────────────────────────┐   │
-│  │  Bull/Bear Investment Debate  →  Judge                   │   │
-│  │  Aggressive/Conservative Risk Debate  →  Risk Judge      │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────────── SIGNAL LAYER ────────────────────────┐   │
-│  │  SignalProcessor: weighted_consensus + MiroFish blend    │   │
-│  │  Threshold: 0.70 | Hard Rules: spread, ATR, drawdown     │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────────── EXECUTION ───────────────────────────┐   │
-│  │  ExecutionAgent → DerivAdapter (WebSocket) / OANDA REST  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────────── LEARNING LOOP ───────────────────────┐   │
-│  │  Reflector (post-trade) → MemPalace (store lessons)      │   │
-│  │  MemoryAgent (update weights) → Dynamic weight evolution  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🚀 Setup
+## 🚀 Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Clone
+git clone https://github.com/ymj6h77jz9-dot/forex-agent-swarm
+cd forex-agent-swarm/swarm
+
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 2. Copy and fill in your env vars
+# 3. Configure
 cp .env.example .env
+# Fill in your API keys (see .env.example for all variables)
 
-# 3. Run in simulation mode (no real orders)
-python main.py --mode sim --pairs EURUSD XAUUSD
+# 4. Run in simulation mode (no real orders)
+python main.py --mode sim --pairs EURUSD XAUUSD GBPUSD
 
-# 4. Run in live mode (real Deriv orders)
-python main.py --mode live --pairs EURUSD XAUUSD GBPUSD
+# 5. Run in live mode (real orders via OANDA)
+python main.py --mode live --pairs EURUSD XAUUSD
+```
+
+---
+
+## 🏗️ 16-Step Decision Pipeline
+
+```
+Market Event
+     │
+     ▼
+ 1. Propagator.create_initial_state()   ← AgentState broadcast
+     │
+     ▼
+ 2. MemPalace.get_relevant_memories()   ← BM25 retrieval (mempalace)
+     │
+     ▼
+ 3. CrucixIntelligence.get_briefing()   ← FRED + BLS + News sweep (every 5 cycles)
+     │
+     ▼
+ 4. OpenBBProvider.get_candles()        ← Live OHLCV + Economic Calendar
+     │  + get_economic_calendar()        → High-impact event guard (50% lot reduction)
+     ▼
+ 5. MiroFishEngine.predict()            ← PSO simulation (60p × 100i)
+     │
+     ▼
+ 6. KronosAdapter.predict()             ← Foundation model 10-bar forecast
+     │
+     ▼
+ 7. DeerFlowResearcher.research()       ← Long-horizon pair research (every 10 cycles)
+     │   └─ parallel subagents (max 3)
+     │   └─ loop detection middleware
+     │   └─ DeerFlow memory updater
+     ▼
+ 8. asyncio.gather(                     ← All sub-agents run concurrently
+     AnalystAgent.analyze(),
+     SentimentAgent.analyze(),          ← + Crucix/DeerFlow context injected
+     RiskAgent.analyze(),
+    )
+     │
+     ▼
+ 9. SignalProcessor.resolve_investment_debate()   ← Bull vs Bear debate → judge
+     │
+     ▼
+10. SignalProcessor.compute_weighted_consensus()  ← votes + MiroFish + Kronos blend
+     │   Weights: Analyst 28% | Sentiment 22% | Risk 20% | MiroFish 15% | Kronos 15%
+     │   Threshold: 0.70
+     ▼
+11. Crucix USD bias override check
+     │
+     ▼
+12. SignalProcessor.resolve_risk_debate()   ← Aggressive vs Conservative → risk judge
+     │
+     ▼
+13. KratosRLEnvironment.observe()           ← 18-dim observation vector
+     └─ _rl_policy()                         → HOLD / EXECUTE_FULL / EXECUTE_HALF / EXECUTE_DOUBLE
+     │
+     ▼
+14. Hard Rule Engine (never bypassed)
+     │   spread < 5 pips | ATR > 0.0001 | drawdown < 5% | open trades < 3
+     ▼
+15. ExecutionAgent.execute_trade()       ← DerivAdapter WebSocket | OANDA REST
+     │
+     ▼
+16. Reflector.reflect()                  ← Post-trade analysis (TradingAgents pattern)
+     └─ MemPalace.store_reflection()     ← Lesson stored in wing/hall/room
+     └─ MemoryAgent.get_updated_weights() ← Dynamic weight evolution
+     └─ MiroFish.reflect_on_performance() ← PSO self-improvement
 ```
 
 ---
@@ -80,33 +117,45 @@ python main.py --mode live --pairs EURUSD XAUUSD GBPUSD
 
 ```
 swarm/
-├── kratos_orchestrator.py      ← MAIN BRAIN (integrates everything)
-├── orchestrator_agent.py       ← Base orchestrator + AgentVote
-├── analyst_agent.py            ← Technical analysis (GPT-4o)
-├── sentiment_agent.py          ← News + Gmail signals (GPT-4o)
-├── risk_agent.py               ← Risk management + hard rules
-├── execution_agent.py          ← Order placement (OANDA)
-├── memory_agent.py             ← Performance tracking + weight evolution
-├── gmail_monitor.py            ← Gmail broker alert classifier
-├── main.py                     ← Entry point
+├── kratos_orchestrator.py       ← THE BRAIN — 16-step pipeline
+├── orchestrator_agent.py        ← Base + AgentVote + MarketState
+├── analyst_agent.py             ← Technical analysis (GPT-4o)
+├── sentiment_agent.py           ← News + Gmail + Crucix context
+├── risk_agent.py                ← VaR + lot sizing + hard rules
+├── execution_agent.py           ← Order placement
+├── memory_agent.py              ← Performance tracking + weight evolution
+├── gmail_monitor.py             ← Gmail broker alert classifier
+├── main.py                      ← Entry point
+│
+├── models/
+│   └── kronos_adapter.py        ← Kronos foundation model (HuggingFace)
 │
 ├── engines/
-│   └── mirofish_engine.py      ← PSO simulation backbone (from MiroFish)
+│   └── mirofish_engine.py       ← PSO prediction engine
+│
+├── rl/
+│   └── tensortrade_env.py       ← RL meta-agent (TensorTrade-style)
+│
+├── agents/
+│   └── deerflow_researcher.py   ← DeerFlow long-horizon researcher
 │
 ├── broker/
-│   └── deriv_adapter.py        ← Deriv WebSocket adapter (from KRATOS-app)
+│   └── deriv_adapter.py         ← Deriv WebSocket adapter
 │
 ├── graph/
-│   ├── propagation.py          ← AgentState propagation (from TradingAgents)
-│   ├── reflection.py           ← Post-trade reflection (from TradingAgents)
-│   └── signal_processing.py   ← Signal extraction + debate resolution
+│   ├── propagation.py           ← AgentState propagation (TradingAgents)
+│   ├── reflection.py            ← Post-trade reflection
+│   └── signal_processing.py    ← Debate resolution + consensus
 │
 ├── memory/
-│   └── mempalace_adapter.py   ← BM25 Memory Palace (from mempalace)
+│   └── mempalace_adapter.py     ← BM25 Memory Palace
 │
-└── data/
-    ├── trade_memory.json       ← Trade log + performance stats
-    └── mempalace.json          ← Persistent memory palace
+├── data/
+│   ├── openbb_provider.py       ← OpenBB unified data layer
+│   └── crucix_intel.py          ← Crucix multi-source macro intel
+│
+├── requirements.txt             ← All dependencies
+└── .env.example                 ← All environment variables
 ```
 
 ---
@@ -116,34 +165,38 @@ swarm/
 | Variable | Description |
 |---|---|
 | `OPENAI_API_KEY` | GPT-4o for all agent reasoning |
-| `OANDA_API_KEY` | OANDA broker key (primary execution) |
+| `OANDA_API_KEY` | OANDA broker (primary execution) |
 | `OANDA_ACCOUNT_ID` | OANDA account ID |
-| `OANDA_BASE_URL` | `https://api-fxpractice.oanda.com` (practice) or `https://api-fxtrade.oanda.com` (live) |
-| `DERIV_API_KEY` | Deriv WebSocket API key (alternative broker) |
+| `DERIV_API_KEY` | Deriv WebSocket key (alternative) |
+| `KRONOS_MODEL_ID` | HuggingFace model ID (default: `NeoQuasar/Kronos-small`) |
+| `FRED_API_KEY` | FRED macro data (Fed Funds, CPI, VIX, yield curve) |
 | `NEWS_API_KEY` | NewsAPI.org for real-time news sentiment |
-| `ACCOUNT_EQUITY` | Starting equity for lot sizing (default: 10000) |
-| `REPORT_EMAIL` | Email for daily swarm reports |
+| `ACCOUNT_EQUITY` | Starting equity for lot sizing |
+| `RUN_MODE` | `sim` (no real orders) or `live` |
+| `WATCH_PAIRS` | Comma-separated pairs to monitor |
 
 ---
 
-## 🧠 How Update Propagation Works
+## 🧠 Agent Weight Evolution
 
-1. `MarketState` event fires → `Propagator.create_initial_state()` broadcasts to all agents
-2. `MemPalace` injects relevant past memories into the shared `AgentState`
-3. `MiroFishEngine` runs 50-particle PSO simulation → probabilistic price forecast
-4. `AnalystAgent`, `SentimentAgent`, `RiskAgent` run **concurrently** via `asyncio.gather()`
-5. Each agent writes its vote back into `AgentState` via `Propagator.propagate_agent_output()`
-6. Bull/Bear debate → judge decision propagates to `AgentState.investment_plan`
-7. `SignalProcessor.compute_weighted_consensus()` blends votes + MiroFish at 20% weight
-8. If score > 0.70 threshold → `ExecutionAgent` places order via `DerivAdapter`
-9. `Reflector` runs post-trade → stores lesson in `MemPalace` room
-10. `MemoryAgent.get_updated_weights()` evolves agent weights based on accuracy history
+Weights start at defaults and evolve after every closed trade:
+
+```
+Analyst:   28%  (Technical analysis accuracy)
+Sentiment: 22%  (News + Gmail + Crucix intel accuracy)
+Risk:      20%  (Risk assessment accuracy)
+MiroFish:  15%  (PSO prediction accuracy — fixed)
+Kronos:    15%  (Foundation model accuracy — fixed)
+```
+
+MemoryAgent tracks per-agent win rates and adjusts the non-fixed weights every trade close.
 
 ---
 
-## 📊 Gmail Integration
+## 📊 Gmail Automation
 
-The `GmailMonitor` listens to your inbox and classifies broker alerts as trading signals:
-- Broker alerts → `SentimentAgent.ingest_email_signal()`
-- Daily performance reports → sent to `REPORT_EMAIL`
-- Triggered automatically via Base44 Gmail connector automation
+Live on Base44. Fires on every new email:
+- Classifies broker alerts → `SentimentAgent` signal feed
+- Ignores promotional/spam emails
+- Logs relevant signals to `ForexEmailSignal` entity
+- End-of-day reports sent to `REPORT_EMAIL`

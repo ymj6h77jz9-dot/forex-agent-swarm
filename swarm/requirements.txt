@@ -1,3 +1,55 @@
-openai>=1.30.0
+# ═══════════════════════════════════════════════════════════════════
+# KRATOS v2 — Complete Agentic Forex Swarm Dependencies
+# ═══════════════════════════════════════════════════════════════════
+
+# ── LLM / AI ────────────────────────────────────────────────────────
+openai>=1.30.0                  # GPT-4o for all agent reasoning
+anthropic>=0.25.0               # Claude 3.5 fallback (optional)
+
+# ── HTTP / Async ─────────────────────────────────────────────────────
 httpx>=0.27.0
+aiohttp>=3.9.0                  # Crucix intel, OpenBB async requests
+websockets>=12.0                # Deriv WebSocket adapter
+
+# ── Data & Quant ─────────────────────────────────────────────────────
+pandas>=2.0.0
+numpy>=1.26.0
+scipy>=1.11.0                   # MiroFish PSO optimization
+
+# ── Market Data ───────────────────────────────────────────────────────
+yfinance>=0.2.40                # OpenBB fallback candle data
+# openbb>=4.3.0                 # Uncomment when installed: pip install openbb
+
+# ── Kronos Foundation Model ───────────────────────────────────────────
+torch>=2.0.0                    # PyTorch for Kronos model inference
+huggingface-hub>=0.22.0         # Download NeoQuasar/Kronos-small
+einops>=0.7.0                   # Kronos module.py tensor operations
+transformers>=4.40.0            # Tokenizer utilities
+# Install Kronos: pip install -e ./Kronos  (from ymj6h77jz9-dot/Kronos)
+
+# ── Memory / Search ───────────────────────────────────────────────────
+rank-bm25>=0.2.2                # MemPalace BM25 retrieval (mempalace)
+
+# ── TensorTrade RL ────────────────────────────────────────────────────
+# tensortrade>=2.0.0            # Uncomment: pip install tensortrade
+gymnasium>=0.29.0               # RL environment base classes
+
+# ── LangGraph / Agents ────────────────────────────────────────────────
+langchain>=0.2.0                # DeerFlow lead agent base
+langchain-openai>=0.1.0         # OpenAI provider for LangChain
+langgraph>=0.1.0                # Graph-based agent orchestration
+
+# ── Broker APIs ───────────────────────────────────────────────────────
+oandapyV20>=0.7.2               # OANDA REST API (primary execution)
+# deriv-api>=1.0.0              # Deriv: pip install deriv-api
+
+# ── Utilities ─────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
+pydantic>=2.0.0
+tenacity>=8.2.0                 # Retry logic for API calls
+loguru>=0.7.0                   # Enhanced logging
+schedule>=1.2.0                 # Job scheduling for main.py
+
+# ── Dev / Testing ─────────────────────────────────────────────────────
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
