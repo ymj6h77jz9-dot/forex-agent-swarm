@@ -4,6 +4,9 @@ SENTIMENT AGENT — Forex Agentic Swarm
 News & sentiment specialist. Scrapes financial news, economic calendar events,
 and social signals. Uses LLM to classify market sentiment and bias direction.
 Integrates Gmail monitoring for broker alerts and news digests.
+
+v2: Accepts _macro_context (Crucix intel) and _research_context (DeerFlow)
+    injected by KratosOrchestratorV2 before analyze() is called.
 """
 
 import asyncio
@@ -20,7 +23,7 @@ SENTIMENT_SYSTEM_PROMPT = """
 You are a forex market sentiment analyst operating inside an autonomous trading swarm.
 
 Your job:
-- Analyze news headlines, economic events, and any provided email alerts
+- Analyze news headlines, economic events, macro signals, and any provided email alerts
 - Determine the net sentiment impact on the given currency pair
 - Return ONLY a JSON object in this exact format:
   {
@@ -32,6 +35,8 @@ Your job:
 
 Rules:
 - High-impact news (NFP, CPI, FOMC, ECB) should yield confidence 0.7+
+- Crucix macro regime (RISK_OFF) should lower confidence for aggressive signals
+- DeerFlow research finding should increase confidence when aligned
 - Contradictory signals across sources → return FLAT with low confidence
 - If no relevant news found, return FLAT with confidence 0.0
 """
@@ -40,7 +45,11 @@ Rules:
 class SentimentAgent:
     def __init__(self):
         self.name = "sentiment"
-        self.gmail_signals = []  # Populated by Gmail monitor automation
+        self.gmail_signals = []       # Populated by Gmail monitor automation
+
+        # Injected by KratosOrchestratorV2 before analyze() is called
+        self._macro_context:    str = ""   # Crucix intelligence briefing
+        self._research_context: str = ""   # DeerFlow research summary
 
     async def analyze(self, market_state) -> "AgentVote":
         from orchestrator_agent import AgentVote
@@ -50,6 +59,15 @@ class SentimentAgent:
 
         # 2. Include any Gmail-sourced signals
         email_signals = self._get_email_signals(market_state.pair)
+
+        # 3. Build enriched prompt with all context layers
+        macro_section = ""
+        if self._macro_context:
+            macro_section = f"\nCRUCIX MACRO INTELLIGENCE:\n{self._macro_context[:800]}\n"
+
+        research_section = ""
+        if self._research_context:
+            research_section = f"\nDEERFLOW RESEARCH BRIEF:\n{self._research_context[:400]}\n"
 
         prompt = f"""
 Currency Pair: {market_state.pair}
@@ -61,8 +79,8 @@ Recent News Headlines:
 
 Email Broker Alerts:
 {json.dumps(email_signals, indent=2)}
-
-Analyze sentiment and return your structured vote.
+{macro_section}{research_section}
+Analyze all signals above. Return your structured vote JSON.
 """
 
         try:
@@ -88,7 +106,7 @@ Analyze sentiment and return your structured vote.
 
     async def _fetch_news(self, pair: str) -> list:
         """Fetch news headlines from NewsAPI for the pair's base currency."""
-        base_currency = pair[:3]  # e.g. "EUR" from "EURUSD"
+        base_currency = pair[:3]
         currency_terms = {
             "EUR": "Euro ECB eurozone",
             "USD": "dollar Federal Reserve Fed",
@@ -134,6 +152,5 @@ Analyze sentiment and return your structured vote.
     def ingest_email_signal(self, signal: dict):
         """Called by the Gmail automation when a relevant email arrives."""
         self.gmail_signals.append(signal)
-        # Keep only last 50 signals in memory
         if len(self.gmail_signals) > 50:
             self.gmail_signals = self.gmail_signals[-50:]
