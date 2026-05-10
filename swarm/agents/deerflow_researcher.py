@@ -1,24 +1,12 @@
 """
 DEERFLOW RESEARCH AGENT
 ========================
-Integrates DeerFlow — "An open-source long-horizon SuperAgent harness that
-researches, codes, and creates. With sandboxes, memories, tools, skill,
-subagents and message gateway."
-
-The DeerFlowResearcher is a specialized sub-agent that runs long-horizon
-research tasks that the main swarm agents can't do in a single pass:
-  - Deep-dive research on currency pairs (central bank policy history)
-  - Multi-source news aggregation with loop detection
-  - Parallel subagent dispatch (mirrors DeerFlow executor.py)
-  - Memory-backed context from past research sessions
-  - Middleware stack: clarification, loop detection, token usage, memory
+Long-horizon research agent — parallel subagents, loop detection,
+memory-backed context, and structured synthesis.
 
 Source: ymj6h77jz9-dot/deer-flow
-Architecture:
-  - lead_agent/agent.py → middleware chain
-  - subagents/executor.py → parallel execution with timeout
-  - agents/memory/storage.py → structured memory (workContext, facts)
-  - agents/middlewares/ → loop detection, clarification, token limits
+v2: Fully migrated to llm_client (OpenRouter free). All LLM calls
+    go through llm() / llm_json() — no bare openai imports.
 """
 
 import asyncio
@@ -30,7 +18,9 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 
-from llm_client import llm_json, llm
+from llm_client import llm, llm_json
+
+logger = logging.getLogger(__name__)
 
 
 class SubagentStatus(Enum):
@@ -43,255 +33,255 @@ class SubagentStatus(Enum):
 
 @dataclass
 class ResearchTask:
-    """A research sub-task dispatched to a subagent."""
-    task_id:    str
-    query:      str
-    agent_type: str         # "web_search" | "fundamental" | "news" | "technical"
-    status:     SubagentStatus = SubagentStatus.PENDING
-    result:     str = ""
-    error:      str = ""
-    started_at: Optional[str] = None
+    task_id:      str
+    query:        str
+    agent_type:   str
+    status:       SubagentStatus = SubagentStatus.PENDING
+    result:       str = ""
+    error:        str = ""
+    started_at:   Optional[str] = None
     completed_at: Optional[str] = None
 
 
 @dataclass
 class ResearchMemory:
-    """
-    DeerFlow-style structured memory.
-    Source: deerflow/agents/memory/storage.py create_empty_memory()
-    """
-    version:     str = "1.0"
-    work_context: str = ""     # Current research context summary
-    personal_context: str = "" # User preferences / trading style
-    top_of_mind:  str = ""     # Most urgent items
-    recent_months: str = ""    # Historical research summaries
-    facts:        List[str] = field(default_factory=list)
+    """DeerFlow-style structured memory — deerflow/agents/memory/storage.py pattern."""
+    version:          str = "1.0"
+    work_context:     str = ""
+    personal_context: str = ""
+    top_of_mind:      str = ""
+    recent_months:    str = ""
+    facts:            List[str] = field(default_factory=list)
 
 
 RESEARCHER_SYSTEM_PROMPT = """
-You are a deep-dive forex research agent with access to web search, news feeds, 
-and economic data. Your role is to provide comprehensive research briefs that the 
-trading swarm uses to make informed decisions.
+You are a deep-dive forex research agent. Provide comprehensive research briefs
+the trading swarm uses to make informed decisions.
 
-When given a research task:
-1. Break it into parallel sub-tasks (max 3 concurrent)
-2. Synthesize findings into a structured brief
-3. Extract key facts for memory storage
-4. Flag any conflicting signals or uncertainties
+Break research into parallel sub-tasks, synthesize findings, extract key facts,
+and flag conflicting signals.
 
-Output format (JSON):
+Return ONLY valid JSON:
 {
-  "summary": "<2-3 sentence executive summary>",
-  "key_findings": ["finding1", "finding2", ...],
-  "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
-  "confidence": <float 0-1>,
-  "facts": ["fact1", "fact2"],  // for memory storage
-  "conflicts": ["conflict1"],   // contradictory signals
+  "summary":       "<2-3 sentence executive summary>",
+  "key_findings":  ["finding1", "finding2"],
+  "sentiment":     "BULLISH" | "BEARISH" | "NEUTRAL",
+  "confidence":    <float 0-1>,
+  "facts":         ["fact1", "fact2"],
+  "conflicts":     ["conflict1"],
   "recommendation": "<actionable trading implication>"
 }
+"""
+
+SUBAGENT_SYSTEM_PROMPT = """
+You are a forex research subagent. Provide concise, fact-based analysis.
+Focus on: market-moving data, central bank signals, key events, technical levels.
+Be specific. No filler. Max 200 words.
 """
 
 
 class DeerFlowResearcher:
     """
     Long-horizon research agent using DeerFlow's architecture.
-    
-    Implements:
-      - Parallel subagent dispatch with timeout (executor.py pattern)
-      - Loop detection middleware (don't repeat identical searches)
-      - Memory middleware (inject past research into context)
-      - Token usage tracking
+    All LLM calls route through llm_client → OpenRouter free.
     """
 
-    SUBAGENT_TIMEOUT  = 30.0   # seconds
-    MAX_CONCURRENT    = 3      # DeerFlow subagent concurrency limit
-    LOOP_DETECT_HASH  = set()  # Tracks query fingerprints to avoid loops
+    SUBAGENT_TIMEOUT = 30.0
+    MAX_CONCURRENT   = 3
+    _loop_fingerprints: set = set()
 
     def __init__(self):
-        self.memory          = ResearchMemory()
+        self.memory         = ResearchMemory()
         self.research_cache: Dict[str, str] = {}
-        self.token_count     = 0
-        self.max_tokens      = 50000   # Budget per session
+        self.token_count    = 0
+        self.max_tokens     = 50_000
 
-    async def research(self, topic: str, pair: str,
-                        context: str = "") -> Dict[str, Any]:
+    async def research(self, topic: str, pair: str, context: str = "") -> Dict[str, Any]:
         """
         Run a comprehensive research pass on a forex topic.
-        
+
         Args:
-            topic:   Research topic e.g. "ECB rate decision impact on EURUSD"
-            pair:    Currency pair context
-            context: Additional context (recent price action, current signals)
-        
+            topic:   e.g. "ECB rate decision impact on EURUSD"
+            pair:    Currency pair
+            context: Recent price action / current signals
+
         Returns:
             Structured research brief dict
         """
-        # Loop detection — DeerFlow middleware pattern
         fingerprint = f"{topic[:50]}:{pair}"
-        if fingerprint in self.LOOP_DETECT_HASH:
-            logger.info(f"[DeerFlow] Loop detected for: {topic[:50]}")
-            cached = self.research_cache.get(fingerprint, "")
+
+        # Loop detection — DeerFlow middleware pattern
+        if fingerprint in self._loop_fingerprints:
+            logger.info(f"[DeerFlow] Loop detected for: {fingerprint}")
+            cached = self.research_cache.get(fingerprint)
             if cached:
-                return json.loads(cached)
+                try:
+                    return json.loads(cached)
+                except Exception:
+                    pass
 
-        self.LOOP_DETECT_HASH.add(fingerprint)
+        self._loop_fingerprints.add(fingerprint)
 
-        # Build parallel sub-tasks
         sub_tasks = self._decompose_research(topic, pair)
-        
-        # Execute subagents with timeout (DeerFlow executor.py pattern)
-        results = await self._execute_subagents(sub_tasks)
-        
-        # Synthesize with memory context
-        brief = await self._synthesize(topic, pair, results, context)
-        
-        # Update memory (DeerFlow memory/updater.py pattern)
+        results   = await self._execute_subagents(sub_tasks)
+        brief     = await self._synthesize(topic, pair, results, context)
         self._update_memory(topic, brief)
-        
-        # Cache result
-        self.research_cache[fingerprint] = json.dumps(brief)
-        
+
+        try:
+            self.research_cache[fingerprint] = json.dumps(brief)
+        except Exception:
+            pass
+
         return brief
 
+    # ── Task decomposition ────────────────────────────────────────────────────
+
     def _decompose_research(self, topic: str, pair: str) -> List[ResearchTask]:
-        """
-        Decompose research into parallel sub-tasks.
-        DeerFlow pattern: break into max MAX_CONCURRENT parallel tasks.
-        """
         import uuid
-        base_currency = pair[:3]
-        quote_currency = pair[3:]
-        
-        tasks = [
+        base  = pair[:3]
+        quote = pair[3:]
+        return [
             ResearchTask(
                 task_id    = str(uuid.uuid4())[:8],
-                query      = f"Latest {base_currency} central bank policy and interest rate outlook {topic}",
+                query      = f"{base} central bank policy interest rate outlook {topic}",
                 agent_type = "fundamental",
             ),
             ResearchTask(
                 task_id    = str(uuid.uuid4())[:8],
-                query      = f"Breaking news {pair} {topic} forex trading signal",
+                query      = f"Breaking news {pair} {topic} forex signal",
                 agent_type = "news",
             ),
             ResearchTask(
                 task_id    = str(uuid.uuid4())[:8],
-                query      = f"{quote_currency} economic outlook inflation employment {topic}",
+                query      = f"{quote} economic outlook inflation employment {topic}",
                 agent_type = "fundamental",
             ),
-        ]
-        return tasks[:self.MAX_CONCURRENT]
+        ][:self.MAX_CONCURRENT]
+
+    # ── Subagent execution ────────────────────────────────────────────────────
 
     async def _execute_subagents(self, tasks: List[ResearchTask]) -> List[ResearchTask]:
-        """
-        Execute subagents in parallel with timeout.
-        Source: deerflow/subagents/executor.py pattern.
-        """
+        """Parallel subagent execution with timeout — executor.py pattern."""
         async def run_task(task: ResearchTask) -> ResearchTask:
-            task.status    = SubagentStatus.RUNNING
+            task.status     = SubagentStatus.RUNNING
             task.started_at = datetime.now(timezone.utc).isoformat()
             try:
-                # Check token budget
                 if self.token_count >= self.max_tokens:
                     task.status = SubagentStatus.FAILED
                     task.error  = "Token budget exhausted"
                     return task
-
                 result = await asyncio.wait_for(
                     self._run_research_subagent(task.query, task.agent_type),
-                    timeout = self.SUBAGENT_TIMEOUT
+                    timeout=self.SUBAGENT_TIMEOUT,
                 )
                 task.result       = result
                 task.status       = SubagentStatus.COMPLETED
                 task.completed_at = datetime.now(timezone.utc).isoformat()
             except asyncio.TimeoutError:
                 task.status = SubagentStatus.TIMED_OUT
-                task.error  = f"Timed out after {self.SUBAGENT_TIMEOUT}s"
+                task.error  = f"Timeout after {self.SUBAGENT_TIMEOUT}s"
+                logger.warning(f"[DeerFlow] Subagent {task.task_id} timed out")
             except Exception as e:
                 task.status = SubagentStatus.FAILED
                 task.error  = str(e)
+                logger.error(f"[DeerFlow] Subagent {task.task_id} failed: {e}")
             return task
 
-        return await asyncio.gather(*[run_task(t) for t in tasks])
+        return list(await asyncio.gather(*[run_task(t) for t in tasks]))
 
     async def _run_research_subagent(self, query: str, agent_type: str) -> str:
-        """
-        Individual subagent execution. Uses GPT-4o as the research LLM.
-        In production, this would call web search tools.
-        """
-        prompt = f"""
-Research task ({agent_type}): {query}
+        """Individual subagent execution via llm_client."""
+        prompt = (
+            f"Research task ({agent_type}): {query}\n\n"
+            "Focus on: market-moving data, central bank signals, key events, "
+            "technical levels. Be specific. Max 200 words."
+        )
+        result = await llm(
+            messages=[
+                {"role": "system", "content": SUBAGENT_SYSTEM_PROMPT},
+                {"role": "user",   "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=300,
+        )
+        # Rough token estimate (4 chars ≈ 1 token)
+        self.token_count += len(result) // 4
+        return result
 
-Provide a concise, fact-based analysis focused on:
-- Current market-moving data points
-- Central bank signals or policy changes  
-- Key economic events coming up
-- Technical level context if relevant
+    # ── Synthesis ─────────────────────────────────────────────────────────────
 
-Be specific. No filler. Max 200 words.
-"""
-        # replaced by llm_client
-        tokens = resp.usage.total_tokens if resp.usage else 0
-        self.token_count += tokens
-        return resp.choices[0].message.content
-
-    async def _synthesize(self, topic: str, pair: str,
-                           tasks: List[ResearchTask],
-                           context: str) -> Dict[str, Any]:
-        """Synthesize subagent results into structured research brief."""
+    async def _synthesize(
+        self,
+        topic:   str,
+        pair:    str,
+        tasks:   List[ResearchTask],
+        context: str,
+    ) -> Dict[str, Any]:
+        """Synthesize subagent results into a structured research brief."""
         completed = [t for t in tasks if t.status == SubagentStatus.COMPLETED]
-        
+
         if not completed:
+            logger.warning(f"[DeerFlow] No subagents completed for: {topic}")
             return {
-                "summary": "Research failed — all subagents timed out or errored",
-                "key_findings": [], "sentiment": "NEUTRAL",
-                "confidence": 0.0, "facts": [], "conflicts": [],
-                "recommendation": "No research available"
+                "summary":        "Research failed — all subagents timed out or errored",
+                "key_findings":   [],
+                "sentiment":      "NEUTRAL",
+                "confidence":     0.0,
+                "facts":          [],
+                "conflicts":      [],
+                "recommendation": "No research available",
             }
 
-        research_text = "\n\n".join([
+        research_text = "\n\n".join(
             f"[{t.agent_type.upper()}]\n{t.result}" for t in completed
-        ])
+        )
+        past_ctx = (
+            f"\nPAST RESEARCH CONTEXT:\n{self.memory.work_context[:500]}\n"
+            if self.memory.work_context else ""
+        )
 
-        past_context = ""
-        if self.memory.work_context:
-            past_context = f"\nPAST RESEARCH CONTEXT:\n{self.memory.work_context[:500]}"
+        prompt = (
+            f"Research Topic: {topic}\nPair: {pair}{past_ctx}\n\n"
+            f"SUBAGENT RESULTS:\n{research_text}\n\n"
+            f"CURRENT CONTEXT:\n{context[:500] if context else 'N/A'}\n\n"
+            "Synthesize into a structured research brief. Return JSON only."
+        )
 
-        prompt = f"""
-Research Topic: {topic}
-Pair: {pair}
-{past_context}
-
-SUBAGENT RESEARCH RESULTS:
-{research_text}
-
-CURRENT MARKET CONTEXT:
-{context[:500] if context else 'Not provided'}
-
-Synthesize into a structured research brief. Return JSON only.
-"""
         try:
-            # replaced by llm_client
-            return json.loads(resp.choices[0].message.content)
+            brief = await llm_json(
+                messages=[
+                    {"role": "system", "content": RESEARCHER_SYSTEM_PROMPT},
+                    {"role": "user",   "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=500,
+            )
+            return brief if brief else {
+                "summary": "Synthesis error", "sentiment": "NEUTRAL",
+                "confidence": 0.0, "key_findings": [], "facts": [],
+                "conflicts": [], "recommendation": "Research unavailable",
+            }
         except Exception as e:
-            logger.error(f"[DeerFlow] Synthesis failed: {e}")
-            return {"summary": "Synthesis error", "sentiment": "NEUTRAL",
-                    "confidence": 0.0, "key_findings": [], "facts": [],
-                    "conflicts": [], "recommendation": "Research unavailable"}
+            logger.error(f"[DeerFlow] _synthesize failed: {e}")
+            return {
+                "summary": f"Synthesis error: {e}", "sentiment": "NEUTRAL",
+                "confidence": 0.0, "key_findings": [], "facts": [],
+                "conflicts": [], "recommendation": "Research unavailable",
+            }
+
+    # ── Memory management ─────────────────────────────────────────────────────
 
     def _update_memory(self, topic: str, brief: Dict[str, Any]):
-        """
-        Update DeerFlow-style structured memory.
-        Source: deerflow/agents/memory/updater.py pattern.
-        """
-        # Add new facts
+        """Update DeerFlow-style structured memory — memory/updater.py pattern."""
         new_facts = brief.get("facts", [])
         self.memory.facts.extend(new_facts)
-        self.memory.facts = list(set(self.memory.facts))[-50:]   # Keep last 50
+        self.memory.facts = list(set(self.memory.facts))[-50:]
 
-        # Update work context
         summary = brief.get("summary", "")
         if summary:
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             self.memory.work_context = (
-                f"{topic}: {summary}\n"
-                + self.memory.work_context
-            )[:1000]   # Rolling context window
+                f"[{ts}] {topic}: {summary}\n" + self.memory.work_context
+            )[:2000]
+
+        logger.debug(f"[DeerFlow] Memory updated | facts={len(self.memory.facts)}")
