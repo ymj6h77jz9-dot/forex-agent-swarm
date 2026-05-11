@@ -108,7 +108,7 @@ class Propagator:
             pair      = pair,
             bid       = bid,
             ask       = ask,
-            spread    = round((ask - bid) * 10000, 2),
+            spread    = round((ask - bid) * (100 if "JPY" in pair or "XAU" in pair or "XAG" in pair else 10000), 2),
             atr       = atr,
             session   = session,
             timestamp = datetime.now(timezone.utc).isoformat(),

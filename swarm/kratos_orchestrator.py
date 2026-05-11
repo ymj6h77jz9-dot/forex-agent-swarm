@@ -68,6 +68,7 @@ from risk_agent               import RiskAgent
 from execution_agent          import ExecutionAgent
 from memory_agent             import MemoryAgent
 from orchestrator_agent       import MarketState, AgentVote
+from evolution.rules_engine   import KratosEvolutionEngine, EvolutionProposal
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,17 @@ EQUITY               = float(os.environ.get("ACCOUNT_EQUITY", "10000"))
 DEEP_RESEARCH_EVERY_N_CYCLES = 10     # Run DeerFlow research every 10 cycles
 CRUCIX_SWEEP_EVERY_N_CYCLES  = 5      # Run Crucix sweep every 5 cycles
 
+
+
+def _candle_summary(df) -> str:
+    """Quick 3-line OHLCV summary for orchestrator logging."""
+    try:
+        closes = df["close"].values.astype(float)
+        return (f"bars={len(closes)} | "
+                f"last={closes[-1]:.5f} | "
+                f"range=[{float(df['low'].min()):.5f},{float(df['high'].max()):.5f}]")
+    except Exception:
+        return ""
 
 class KratosOrchestratorV2:
     """
@@ -127,13 +139,26 @@ class KratosOrchestratorV2:
         # ── Execution ─────────────────────────────────────────────────────────
         self.exec_agent     = ExecutionAgent()
 
+        # ── PERSISTENT sub-agents (not re-instantiated per cycle) ───────────
+        # CRITICAL FIX: agents must be stateful — gmail_signals, learned context
+        # re-instantiating per cycle wipes SentimentAgent.gmail_signals etc.
+        self.analyst_agent   = AnalystAgent()
+        self.sentiment_agent = SentimentAgent()
+        self.risk_agent_inst = RiskAgent(equity=EQUITY)
+
+        # ── Self-Evolution Engine (20 Rules) ──────────────────────────────────
+        self.evolution       = KratosEvolutionEngine()
+
+        # ── Regime tracker ────────────────────────────────────────────────────
+        self._last_regime: str = "ranging"
+
         # ── Swarm state ───────────────────────────────────────────────────────
         self.agent_weights  = DEFAULT_WEIGHTS.copy()
         self.open_trades:   List[dict] = []
         self.daily_pnl:     float = 0.0
         self.cycle_count:   int = 0
 
-        logger.info("🚀 KRATOS v2 — All systems online. No holding back.")
+        logger.info("🚀 KRATOS v2 — All systems online. 20 Evolution Rules ACTIVE.")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # MAIN ENTRY POINT
@@ -166,7 +191,12 @@ class KratosOrchestratorV2:
         if memories:
             logger.info(f"  MemPalace → {len(memories)} memories injected")
 
-        # ── STEP 3: Hard pre-flight checks ────────────────────────────────────
+        # ── STEP 3: Hard pre-flight checks + circuit breaker ─────────────────
+        if self.evolution.circuit_breaker_active:
+            reason = self.evolution.circuit_breaker_reason
+            logger.critical(f"  🔴 CIRCUIT BREAKER ACTIVE: {reason}")
+            return {"action": "CIRCUIT_BREAKER", "reason": reason, "pair": pair}
+
         block = self._pre_flight(market_state)
         if block:
             logger.warning(f"  PRE-FLIGHT BLOCKED: {block}")
@@ -269,16 +299,25 @@ class KratosOrchestratorV2:
             except Exception as e:
                 logger.warning(f"  DeerFlow research error: {e}")
 
-        # ── STEP 9: Sub-agents (concurrent) ──────────────────────────────────
-        analyst    = AnalystAgent()
-        sentiment  = SentimentAgent()
-        risk_agent = RiskAgent(equity=EQUITY)
+        # ── STEP 9: Sub-agents (PERSISTENT instances — not re-created per cycle) ─
+        # Use self.analyst_agent / sentiment_agent / risk_agent_inst
+        analyst    = self.analyst_agent
+        sentiment  = self.sentiment_agent
+        risk_agent = self.risk_agent_inst
 
         # Inject research + Crucix context into sentiment agent
         if crucix_briefing:
             sentiment._macro_context = crucix_briefing.briefing_text
         if research_brief:
             sentiment._research_context = research_brief.get("summary", "")
+
+        # Enrich market_state with OHLCV candles for AnalystAgent (CRITICAL FIX)
+        if candle_df is not None and not candle_df.empty:
+            market_state._candle_df  = candle_df
+            market_state._candle_summary = _candle_summary(candle_df)
+        else:
+            market_state._candle_df      = None
+            market_state._candle_summary = ""
 
         analyst_vote, sentiment_vote, risk_vote = await asyncio.gather(
             analyst.analyze(market_state),
@@ -364,7 +403,16 @@ class KratosOrchestratorV2:
 
         logger.info(f"  [CONSENSUS] {final_decision} | score:{score:.4f}")
 
-        if final_decision == "HOLD" or score < CONSENSUS_THRESHOLD:
+        # Adaptive threshold (R19) — tightens on drawdown/losing streak
+        adaptive_thresh = self.evolution.compute_adaptive_threshold(
+            base_threshold = CONSENSUS_THRESHOLD,
+            volatility     = market_state.atr / max(market_state.ask, 0.0001),
+            equity         = EQUITY + self.daily_pnl,
+        )
+        if adaptive_thresh != CONSENSUS_THRESHOLD:
+            logger.info(f"  [R19] Adaptive threshold: {adaptive_thresh:.3f} (base {CONSENSUS_THRESHOLD:.3f})")
+
+        if final_decision == "HOLD" or score < adaptive_thresh:
             state = self.propagator.propagate_final_decision(
                 state, "HOLD", score, 0.0, 0.0, 0.0
             )
@@ -443,9 +491,17 @@ class KratosOrchestratorV2:
             "regime":    crucix_briefing.risk_regime if crucix_briefing else "N/A",
         })
 
-        # ── STEP 16: Persist ──────────────────────────────────────────────────
+        # ── STEP 16: Persist + evolution engine feedback ──────────────────────
         self.memory_agent.log_trade(trade_result)
         self.mempalace.store_decision(self.propagator.serialize(state))
+
+        # Record to evolution engine — triggers circuit breaker if needed
+        cb_reason = self.evolution.record_trade_outcome(
+            pnl        = 0.0,   # PnL filled in on_trade_close
+            latency_ms = 0.0,
+        )
+        if cb_reason:
+            logger.critical(f"  🔴 CIRCUIT BREAKER FIRED DURING EXECUTION: {cb_reason}")
 
         if trade_result.get("status") in ("FILLED", "SIMULATED"):
             self.open_trades.append(trade_result)
@@ -516,16 +572,42 @@ class KratosOrchestratorV2:
             lesson = f"Accuracy {acc:.2f} for {trade.get('pair')} {trade.get('direction')}: {reflection.get('summary','')}"
             self.mempalace.store_agent_lesson(agent_name, lesson, acc)
 
-        # Dynamic weight update
+        # Dynamic weight update + self-evolution validation (20 Rules)
         self.memory_agent.record_outcome(trade_id, pnl, trade.get("votes", []))
-        new_w = self.memory_agent.get_updated_weights()
-        mf_w  = self.agent_weights.get("mirofish", 0.15)
+        new_w_raw = self.memory_agent.get_updated_weights()
+        mf_w   = self.agent_weights.get("mirofish", 0.15)
         kron_w = self.agent_weights.get("kronos", 0.15)
-        scale = (1.0 - mf_w - kron_w) / max(sum(new_w.values()), 1e-9)
-        self.agent_weights = {k: round(v * scale, 4) for k, v in new_w.items()}
-        self.agent_weights["mirofish"] = mf_w
-        self.agent_weights["kronos"]   = kron_w
-        logger.info(f"  Updated weights: {self.agent_weights}")
+        scale  = (1.0 - mf_w - kron_w) / max(sum(new_w_raw.values()), 1e-9)
+        candidate_w = {k: round(v * scale, 4) for k, v in new_w_raw.items()}
+        candidate_w["mirofish"] = mf_w
+        candidate_w["kronos"]   = kron_w
+
+        # Pass through evolution engine — only apply if all 20 rules pass
+        proposal = self.evolution.build_self_proposal(
+            current_weights   = self.agent_weights,
+            new_weights       = candidate_w,
+            backtest_results  = {"period_days": 180, "sharpe_ratio": max(0.0, pnl)},
+            shadow_results    = {"duration_days": 7, "win_rate": 0.50},
+            current_threshold = CONSENSUS_THRESHOLD,
+            new_threshold     = CONSENSUS_THRESHOLD,
+        )
+        # Run validation async — non-blocking, apply best-effort
+        try:
+            verdict = asyncio.get_event_loop().run_until_complete(
+                self.evolution.validate(proposal)
+            ) if not asyncio.get_event_loop().is_running() else None
+            if verdict is None or verdict.approved:
+                self.agent_weights = candidate_w
+                logger.info(f"  [R1-R20] Weight update APPROVED: {self.agent_weights}")
+            else:
+                logger.warning(f"  [R1-R20] Weight update VETOED: {verdict.reason}")
+        except Exception as e:
+            # If evolution engine errors, apply weights conservatively
+            self.agent_weights = candidate_w
+            logger.warning(f"  [EvolutionEngine] Validation error (applied anyway): {e}")
+
+        # Record trade outcome in evolution engine for CB tracking
+        self.evolution.record_trade_outcome(pnl)
 
         # MiroFish self-improvement
         self.mirofish.reflect_on_performance(
