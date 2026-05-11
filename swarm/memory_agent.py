@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 """
 MEMORY & FEEDBACK AGENT — Forex Agentic Swarm
 ------------------------------------------------
@@ -52,7 +56,7 @@ class MemoryAgent:
         self.memory["trades"].append(trade)
         self.memory["performance"]["total_trades"] += 1
         self._save()
-        print(f"[MEMORY] Trade logged: {trade.get('pair')} {trade.get('direction')}")
+        logger.info(f"[MEMORY] Trade logged: {trade.get('pair')} {trade.get('direction')}")
 
     def record_outcome(self, trade_id: str, pnl: float, votes: list):
         """
@@ -96,7 +100,7 @@ class MemoryAgent:
             self.memory["performance"]["worst_trade"] = {"trade_id": trade_id, "pnl": pnl}
 
         self._save()
-        print(f"[MEMORY] Outcome recorded: {outcome} | PnL: ${pnl:.2f}")
+        logger.info(f"[MEMORY] Outcome recorded: {outcome} | PnL: ${pnl:.2f}")
 
     def get_updated_weights(self) -> dict:
         """
@@ -115,7 +119,7 @@ class MemoryAgent:
         total_acc = sum(accuracy.values()) or 1.0
         weights   = {a: round(v / total_acc, 4) for a, v in accuracy.items()}
 
-        print(f"[MEMORY] Updated weights: {weights}")
+        logger.info(f"[MEMORY] Updated weights: {weights}")
         return weights
 
     def get_summary(self) -> dict:

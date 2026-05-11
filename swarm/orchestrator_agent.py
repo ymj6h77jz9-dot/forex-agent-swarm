@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 """
 ORCHESTRATOR AGENT — Forex Agentic Swarm
 -----------------------------------------
@@ -56,7 +60,7 @@ class OrchestratorAgent:
 
     # ── Main entry point ──────────────────────────────────────────────────────
     async def process_market_event(self, market_state: MarketState) -> dict:
-        print(f"\n[ORCHESTRATOR] Market event: {market_state.pair} @ {market_state.ask}")
+        logger.info(f"\n[ORCHESTRATOR] Market event: {market_state.pair} @ {market_state.ask}")
 
         # 1. Hard guards — check before broadcasting
         if not self._pre_flight_checks():
@@ -67,7 +71,7 @@ class OrchestratorAgent:
 
         # 3. Aggregate votes
         decision = self._aggregate_votes(votes)
-        print(f"[ORCHESTRATOR] Consensus: {decision}")
+        logger.info(f"[ORCHESTRATOR] Consensus: {decision}")
 
         # 4. If approved, propagate to execution
         if decision["action"] == "EXECUTE":
@@ -80,10 +84,10 @@ class OrchestratorAgent:
     # ── Pre-flight risk checks ─────────────────────────────────────────────────
     def _pre_flight_checks(self) -> bool:
         if self.state.open_trades >= MAX_OPEN_TRADES:
-            print("[ORCHESTRATOR] BLOCKED: Max open trades reached")
+            logger.info("[ORCHESTRATOR] BLOCKED: Max open trades reached")
             return False
         if self.state.daily_drawdown >= MAX_DAILY_DRAWDOWN:
-            print("[ORCHESTRATOR] BLOCKED: Daily drawdown limit hit")
+            logger.info("[ORCHESTRATOR] BLOCKED: Daily drawdown limit hit")
             return False
         return True
 
@@ -109,12 +113,12 @@ class OrchestratorAgent:
         votes = []
         for name, result in zip(tasks.keys(), results):
             if isinstance(result, Exception):
-                print(f"[ORCHESTRATOR] Agent '{name}' errored: {result}")
+                logger.info(f"[ORCHESTRATOR] Agent '{name}' errored: {result}")
                 # Inject a FLAT vote so it doesn't block consensus
                 votes.append(AgentVote(name, "FLAT", 0.0, "Agent error", market_state.pair))
             else:
                 votes.append(result)
-                print(f"[ORCHESTRATOR] {name} voted: {result.signal} ({result.confidence:.2f})")
+                logger.info(f"[ORCHESTRATOR] {name} voted: {result.signal} ({result.confidence:.2f})")
 
         return votes
 
@@ -158,7 +162,7 @@ class OrchestratorAgent:
         from execution_agent import ExecutionAgent
         exec_agent = ExecutionAgent()
         result = await exec_agent.execute_trade(decision, market_state)
-        print(f"[ORCHESTRATOR] Execution result: {result}")
+        logger.info(f"[ORCHESTRATOR] Execution result: {result}")
         return result
 
     # ── Update internal state after trade ─────────────────────────────────────

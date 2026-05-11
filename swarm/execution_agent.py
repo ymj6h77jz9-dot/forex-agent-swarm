@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 """
 EXECUTION AGENT — Forex Agentic Swarm
 ----------------------------------------
@@ -60,11 +64,11 @@ class ExecutionAgent:
             }
         }
 
-        print(f"[EXECUTION] Placing {direction} on {pair} | SL:{sl} TP:{tp} Lots:{lot_size}")
+        logger.info(f"[EXECUTION] Placing {direction} on {pair} | SL:{sl} TP:{tp} Lots:{lot_size}")
 
         if not OANDA_API_KEY or not OANDA_ACCOUNT_ID:
             # Simulation mode — log but don't call broker
-            print("[EXECUTION] ⚠️  Simulated — no OANDA credentials set")
+            logger.info("[EXECUTION] ⚠️  Simulated — no OANDA credentials set")
             return {
                 "status":    "SIMULATED",
                 "direction": direction,
@@ -108,7 +112,7 @@ class ExecutionAgent:
                 }
 
         except Exception as e:
-            print(f"[EXECUTION] Order failed: {e}")
+            logger.info(f"[EXECUTION] Order failed: {e}")
             return {
                 "status":    "FAILED",
                 "direction": direction,
