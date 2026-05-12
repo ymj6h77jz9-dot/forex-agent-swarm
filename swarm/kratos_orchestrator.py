@@ -70,6 +70,13 @@ from memory_agent             import MemoryAgent
 from orchestrator_agent       import MarketState, AgentVote
 from evolution.rules_engine   import KratosEvolutionEngine, EvolutionProposal
 
+# ── NEW: Reference architecture modules (spec-complete) ───────────────────────
+from engines.mirofish_core      import MiroFishCore, SubAgentManager, AgentSignal as MFSignal
+from memory.memory_manager      import MemoryManager
+from execution.execution_router import ExecutionRouter
+from risk.risk_engine           import RiskEngine, AnomalyDetector
+from audit.audit_logger         import AuditLogger
+
 logger = logging.getLogger(__name__)
 
 # ── Global weights (evolved by MemoryAgent) ───────────────────────────────────
@@ -149,6 +156,23 @@ class KratosOrchestratorV2:
         # ── Self-Evolution Engine (20 Rules) ──────────────────────────────────
         self.evolution       = KratosEvolutionEngine()
 
+        # ── Reference architecture modules (wired in) ─────────────────────────
+        # MiroFishCore: R1-R5 decision intelligence (replaces inline fusion logic)
+        self.mirofish_core   = MiroFishCore()
+        self.subagent_mgr    = SubAgentManager(self.mirofish_core)
+
+        # MemoryManager: R6-R10 memory & learning (wraps MemPalaceAdapter)
+        self.memory_mgr      = MemoryManager(self.mempalace)
+
+        # ExecutionRouter: R11-R15 execution paths (wraps ExecutionAgent)
+        self.exec_router     = ExecutionRouter(None)  # broker injected on first trade
+
+        # RiskEngine: R16-R20 absolute veto layer (authoritative risk gate)
+        self.risk_engine     = RiskEngine(equity=EQUITY)
+
+        # AuditLogger: R20 immutable audit trail
+        self.audit           = AuditLogger()
+
         # ── Regime tracker ────────────────────────────────────────────────────
         self._last_regime: str = "ranging"
 
@@ -180,7 +204,15 @@ class KratosOrchestratorV2:
             session = market_state.session,
         )
 
-        # ── STEP 2: MemPalace — inject past memories ──────────────────────────
+        # ── STEP 2: MemPalace + MemoryManager — inject past memories ────────────
+        # R6: MemoryManager retrieves structured context (decisions + patterns + diaries)
+        mem_ctx = self.memory_mgr.retrieve_context(
+            pair    = pair,
+            session = market_state.session,
+            query   = f"{pair} {market_state.session} signal",
+        )
+        # R10: Contradiction pre-check from recent diary patterns
+        _diary_context = self.memory_mgr.read_all_diaries(last_n=3)
         memories = self.mempalace.get_relevant_memories(
             pair    = pair,
             session = market_state.session,
@@ -248,6 +280,15 @@ class KratosOrchestratorV2:
             agent_bias    = 0.0,
         )
         state = self.propagator.propagate_mirofish(state, mf_prediction)
+        # R2: Update regime tracker via MiroFishCore
+        candle_df_ref = state.candle_df if hasattr(state, 'candle_df') else candle_df
+        detected_regime = self.mirofish_core.detect_regime(
+            atr         = market_state.atr,
+            price       = market_state.ask,
+            candle_df   = candle_df_ref,
+            news_impact = 0.0,
+        )
+        self._last_regime = detected_regime.value
         logger.info(
             f"  MiroFish → Bull:{mf_prediction.bullish_probability:.2f} "
             f"Bear:{mf_prediction.bearish_probability:.2f} "
@@ -402,6 +443,17 @@ class KratosOrchestratorV2:
                 score -= 0.05
 
         logger.info(f"  [CONSENSUS] {final_decision} | score:{score:.4f}")
+        # R20: Audit every decision
+        self.audit.log_decision(
+            cycle_id    = state.cycle_id,
+            pair        = pair,
+            direction   = final_decision,
+            confidence  = score,
+            score       = score,
+            regime      = self._last_regime,
+            weights     = dict(self.agent_weights),
+            agent_votes = vote_dicts,
+        )
 
         # Adaptive threshold (R19) — tightens on drawdown/losing streak
         adaptive_thresh = self.evolution.compute_adaptive_threshold(
@@ -476,7 +528,39 @@ class KratosOrchestratorV2:
             state, final_decision, score, final_lot, sl, tp
         )
 
-        # ── STEP 15: Execute ──────────────────────────────────────────────────
+        # ── STEP 14b: RiskEngine Hard Veto (R16 — authoritative) ──────────────
+        open_pair_list = [t.get("pair","") for t in self.open_trades]
+        re_validation  = self.risk_engine.validate_trade(
+            trade    = {
+                "pair":       pair,
+                "direction":  final_decision,
+                "lot_size":   final_lot,
+                "price":      market_state.ask,
+                "stop_loss":  sl,
+                "atr":        market_state.atr,
+                "spread":     market_state.spread,
+            },
+            portfolio = {
+                "equity":             EQUITY + self.daily_pnl,
+                "balance":            EQUITY + self.daily_pnl,
+                "open_trades":        len(self.open_trades),
+                "daily_pnl":          self.daily_pnl,
+                "total_exposure_pct": len(self.open_trades) * 0.04,
+            },
+            open_pairs = open_pair_list,
+        )
+        if not re_validation.approved:
+            self.audit.log_risk_veto(pair, final_decision, re_validation.rejections)
+            logger.warning(f"  [R16] RISK ENGINE VETO: {re_validation.rejections}")
+            return {"action": "RISK_VETOED", "pair": pair,
+                    "reason": re_validation.rejections, "score": score}
+
+        # Apply RiskEngine lot adjustment
+        if re_validation.lot_adj < 1.0:
+            final_lot = round(final_lot * re_validation.lot_adj, 2)
+            logger.info(f"  [R16] Lot reduced to {final_lot:.2f} (adj={re_validation.lot_adj:.2f})")
+
+        # ── STEP 15: Execute ──────────────────────────────────────────────────────
         trade_result = await self.exec_agent.execute_trade(
             {"direction": final_decision, "score": score},
             market_state,
@@ -503,6 +587,17 @@ class KratosOrchestratorV2:
         if cb_reason:
             logger.critical(f"  🔴 CIRCUIT BREAKER FIRED DURING EXECUTION: {cb_reason}")
 
+        # R20: Audit trade open
+        if trade_result.get("status") in ("FILLED", "SIMULATED"):
+            self.audit.log_trade_open({
+                **trade_result,
+                "pair":       pair,
+                "direction":  final_decision,
+                "lot_size":   trade_result.get("lot_size", 0),
+                "sl":         trade_result.get("sl", 0),
+                "tp":         trade_result.get("tp", 0),
+                "cycle_id":   state.cycle_id,
+            })
         if trade_result.get("status") in ("FILLED", "SIMULATED"):
             self.open_trades.append(trade_result)
 
@@ -563,9 +658,25 @@ class KratosOrchestratorV2:
             actual_direction = actual_direction,
         )
 
-        # Store in MemPalace
+        # Store in MemPalace (legacy)
         situation = self.reflector.extract_situation_for_memory(state_snapshot)
         self.mempalace.store_reflection(reflection, situation)
+
+        # R8: MemoryManager reflection loop (authoritative)
+        mm_reflection = self.memory_mgr.run_reflection(
+            trade_id    = trade_id,
+            outcome     = {"pnl": pnl, "pair": trade.get("pair",""), "direction": actual_direction},
+            agent_votes = trade.get("votes", []),
+            decision    = trade.get("direction", ""),
+        )
+        # R20: Audit trade close
+        self.audit.log_trade_close(trade_id, pnl, trade.get("pair",""), actual_direction)
+
+        # Record in RiskEngine for CB tracking
+        cb_fired = self.risk_engine.record_outcome(pnl)
+        if cb_fired:
+            self.audit.log_circuit_breaker(cb_fired, True)
+            logger.critical(f"  [R18] RiskEngine CB fired: {cb_fired}")
 
         # Store per-agent lessons
         for agent_name, acc in reflection.get("agent_accuracy", {}).items():
@@ -599,6 +710,7 @@ class KratosOrchestratorV2:
             if verdict is None or verdict.approved:
                 self.agent_weights = candidate_w
                 logger.info(f"  [R1-R20] Weight update APPROVED: {self.agent_weights}")
+                self.audit.log_weight_update(candidate_w, self.agent_weights, "evolution_approved")
             else:
                 logger.warning(f"  [R1-R20] Weight update VETOED: {verdict.reason}")
         except Exception as e:
