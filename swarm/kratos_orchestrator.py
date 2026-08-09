@@ -73,7 +73,7 @@ from evolution.rules_engine   import KratosEvolutionEngine, EvolutionProposal
 # ── NEW: Reference architecture modules (spec-complete) ───────────────────────
 from engines.mirofish_core      import MiroFishCore, SubAgentManager, AgentSignal as MFSignal
 from memory.memory_manager      import MemoryManager
-from execution.execution_router import ExecutionRouter
+from execution.execution_router import ExecutionRouter, ExecutionResult, ExecutionPath
 from risk.risk_engine           import RiskEngine, AnomalyDetector
 from audit.audit_logger         import AuditLogger
 
@@ -560,20 +560,56 @@ class KratosOrchestratorV2:
             final_lot = round(final_lot * re_validation.lot_adj, 2)
             logger.info(f"  [R16] Lot reduced to {final_lot:.2f} (adj={re_validation.lot_adj:.2f})")
 
-        # ── STEP 15: Execute ──────────────────────────────────────────────────────
-        trade_result = await self.exec_agent.execute_trade(
-            {"direction": final_decision, "score": score},
-            market_state,
+        # ── STEP 15: Execute via ExecutionRouter (R11-R15) ───────────────────
+        # Determine urgency from score + regime — FAST if high conviction
+        _urgency    = "high"   if score > 0.88 else "normal"
+        _complexity = "high"   if self._last_regime in ("news_spike", "crisis") else "low"
+        _exec_path  = self.exec_router.determine_path(score, _complexity, _urgency)
+        logger.info(f"  [R11] ExecutionRouter path: {_exec_path.value} "
+                    f"(conf={score:.3f} regime={self._last_regime})")
+
+        # Inject broker if not yet set on the router
+        if self.exec_router._broker is None:
+            self.exec_router._broker = getattr(self.exec_agent, '_broker', None) \
+                                    or getattr(self.exec_agent, 'broker', None)
+
+        exec_result: ExecutionResult = await self.exec_router.execute(
+            pair        = pair,
+            direction   = final_decision,
+            lot_size    = final_lot,
+            stop_loss   = sl,
+            take_profit = tp,
+            confidence  = score,
+            complexity  = _complexity,
+            urgency     = _urgency,
+            decision_id = state.cycle_id,
         )
-        trade_result.update({
-            "lot_size":  final_lot,
-            "sl":        sl,
-            "tp":        tp,
-            "cycle_id":  state.cycle_id,
-            "mirofish":  mf_prediction.particle_consensus,
-            "kronos":    kronos_pred.direction if kronos_pred else "N/A",
-            "regime":    crucix_briefing.risk_regime if crucix_briefing else "N/A",
-        })
+
+        # Normalise ExecutionResult → trade_result dict (keeps downstream compatible)
+        trade_result = {
+            "status":       exec_result.status,
+            "order_id":     exec_result.order_id,
+            "exec_price":   exec_result.exec_price,
+            "latency_ms":   exec_result.latency_ms,
+            "exec_path":    exec_result.path.value,
+            "broker":       exec_result.broker,
+            "replay_id":    exec_result.replay_id,
+            "error":        exec_result.error,
+            "lot_size":     final_lot,
+            "sl":           sl,
+            "tp":           tp,
+            "cycle_id":     state.cycle_id,
+            "pair":         pair,
+            "direction":    final_decision,
+            "mirofish":     mf_prediction.particle_consensus,
+            "kronos":       kronos_pred.direction if kronos_pred else "N/A",
+            "regime":       crucix_briefing.risk_regime if crucix_briefing else "N/A",
+            "votes":        vote_dicts,
+            "rl_action":    rl_action,
+        }
+
+        if exec_result.error:
+            logger.error(f"  [R15] Execution error: {exec_result.error}")
 
         # ── STEP 16: Persist + evolution engine feedback ──────────────────────
         self.memory_agent.log_trade(trade_result)
@@ -582,7 +618,7 @@ class KratosOrchestratorV2:
         # Record to evolution engine — triggers circuit breaker if needed
         cb_reason = self.evolution.record_trade_outcome(
             pnl        = 0.0,   # PnL filled in on_trade_close
-            latency_ms = 0.0,
+            latency_ms = exec_result.latency_ms,
         )
         if cb_reason:
             logger.critical(f"  🔴 CIRCUIT BREAKER FIRED DURING EXECUTION: {cb_reason}")
@@ -604,7 +640,10 @@ class KratosOrchestratorV2:
         logger.info(
             f"\n  ✅ EXECUTED [{final_decision}] {pair} | "
             f"Lots:{final_lot} SL:{sl} TP:{tp} | "
-            f"Status:{trade_result.get('status')}"
+            f"Status:{trade_result.get('status')} | "
+            f"Path:{trade_result.get('exec_path','?')} | "
+            f"Latency:{trade_result.get('latency_ms',0):.1f}ms | "
+            f"Broker:{trade_result.get('broker','?')}"
         )
 
         return {
