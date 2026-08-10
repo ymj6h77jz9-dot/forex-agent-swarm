@@ -71,7 +71,8 @@ from orchestrator_agent       import MarketState, AgentVote
 from evolution.rules_engine   import KratosEvolutionEngine, EvolutionProposal
 
 # ── Data + memory sync modules (source repo sync) ─────────────────────────────
-from data.quantdinger_feeds  import fetch_forex_quotes, fetch_sentiment_snapshot, SentimentSnapshot
+from broker.broker_router      import BrokerRouter
+from data.quantdinger_feeds  import fetch_forex_quotes, fetch_sentiment_snapshot, SentimentSnapshot, FOREX_PAIRS
 from data.kronos_adapter     import predict_batch as kronos_predict_batch, KronosPrediction
 from data.market_data_utils  import to_utc, session_from_utc, normalise_candle_index, is_market_open
 from memory.mempalace_layers import load_memory_context, store_to_layer3, MemoryContext
@@ -171,7 +172,10 @@ class KratosOrchestratorV2:
         self.memory_mgr      = MemoryManager(self.mempalace)
 
         # ExecutionRouter: R11-R15 execution paths (wraps ExecutionAgent)
-        self.exec_router     = ExecutionRouter(None)  # broker injected on first trade
+        # BrokerRouter: OANDA → Deriv → IC Markets → Alpaca → SIM (with auto-failover)
+        self.broker_router   = BrokerRouter()
+        # ExecutionRouter wraps BrokerRouter for latency-aware path selection
+        self.exec_router     = ExecutionRouter(self.broker_router)
 
         # RiskEngine: R16-R20 absolute veto layer (authoritative risk gate)
         self.risk_engine     = RiskEngine(equity=EQUITY)
