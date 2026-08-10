@@ -45,7 +45,8 @@ logging.basicConfig(
 logger = logging.getLogger("kratos.main")
 
 # ── Imports ──────────────────────────────────────────────────────────────────
-from kratos_orchestrator import KratosOrchestratorV2
+from kratos_orchestrator     import KratosOrchestratorV2
+from data.quantdinger_feeds  import FOREX_PAIRS
 from orchestrator_agent  import MarketState
 from llm_client          import get_active_provider
 
@@ -238,10 +239,12 @@ async def live_market_feed(
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="KRATOS v2 Forex Agentic Swarm")
+    # Build canonical pair list from QuantDinger 8-pair map (e.g. EUR/USD → EURUSD for OANDA)
+    _default_pairs = [p["name"].replace("/", "") for p in FOREX_PAIRS]
     parser.add_argument(
         "--pairs", nargs="+",
-        default=["EURUSD", "XAUUSD"],
-        help="Pairs to trade (e.g. EURUSD XAUUSD GBPUSD)",
+        default=_default_pairs,
+        help="Pairs to trade (default: all 8 QuantDinger canonical pairs)",
     )
     parser.add_argument(
         "--mode", choices=["live", "sim"],
@@ -261,17 +264,10 @@ async def main() -> None:
 
     # Banner
     provider = get_active_provider()
-    print(f"""
-╔══════════════════════════════════════════════════════╗
-║           KRATOS v2 — Forex Agentic Swarm            ║
-╠══════════════════════════════════════════════════════╣
-║  Mode   : {args.mode:<43} ║
-║  Pairs  : {', '.join(args.pairs):<43} ║
-║  Equity : ${args.equity:<42,.0f} ║
-║  LLM    : {provider[:43]:<43} ║
-║  Started: {datetime.now().strftime('%Y-%m-%d %H:%M UTC'):<43} ║
-╚══════════════════════════════════════════════════════╝
-""")
+    logger.info(
+        "KRATOS v2 START | mode=%s | pairs=%s | equity=%.0f | llm=%s",
+        args.mode, ",".join(args.pairs), args.equity, provider,
+    )
 
     orchestrator = KratosOrchestratorV2(account_equity=args.equity)
 
