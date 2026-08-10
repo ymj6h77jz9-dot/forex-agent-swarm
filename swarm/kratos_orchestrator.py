@@ -70,6 +70,12 @@ from memory_agent             import MemoryAgent
 from orchestrator_agent       import MarketState, AgentVote
 from evolution.rules_engine   import KratosEvolutionEngine, EvolutionProposal
 
+# ── Data + memory sync modules (source repo sync) ─────────────────────────────
+from data.quantdinger_feeds  import fetch_forex_quotes, fetch_sentiment_snapshot, SentimentSnapshot
+from data.kronos_adapter     import predict_batch as kronos_predict_batch, KronosPrediction
+from data.market_data_utils  import to_utc, session_from_utc, normalise_candle_index, is_market_open
+from memory.mempalace_layers import load_memory_context, store_to_layer3, MemoryContext
+
 # ── NEW: Reference architecture modules (spec-complete) ───────────────────────
 from engines.mirofish_core      import MiroFishCore, SubAgentManager, AgentSignal as MFSignal
 from memory.memory_manager      import MemoryManager
@@ -173,6 +179,12 @@ class KratosOrchestratorV2:
         # AuditLogger: R20 immutable audit trail
         self.audit           = AuditLogger()
 
+        # ── QuantDinger sentiment snapshot (refreshed every CRUCIX_SWEEP cycles) ─
+        self._sentiment_snap: Optional[SentimentSnapshot] = None
+
+        # ── mempalace layer context (refreshed every cycle) ───────────────────────
+        self._mem_context: Optional[MemoryContext] = None
+
         # ── Regime tracker ────────────────────────────────────────────────────
         self._last_regime: str = "ranging"
 
@@ -223,6 +235,25 @@ class KratosOrchestratorV2:
         if memories:
             logger.info(f"  MemPalace → {len(memories)} memories injected")
 
+        # Load 4-layer memory context (mempalace v3.0.12) for cycle
+        _session_now = session_from_utc()
+        _topic       = f"{pair.replace('/','_')}_{_session_now}"
+        _deep_query  = pair if (self.cycle_count % DEEP_RESEARCH_EVERY_N_CYCLES == 1) else None
+        try:
+            self._mem_context = load_memory_context(
+                topic      = _topic,
+                deep_query = _deep_query,
+            )
+            logger.info(
+                f"  [LAYERS] L0={len(self._mem_context.identity)} "
+                f"L1={len(self._mem_context.story_items)} "
+                f"L2={len(self._mem_context.topic_items)} "
+                f"L3={len(self._mem_context.deep_hits)} "
+                f"~{self._mem_context.total_tokens_est}tok"
+            )
+        except Exception as _le:
+            logger.warning(f"  mempalace layer load error: {_le}")
+
         # ── STEP 3: Hard pre-flight checks + circuit breaker ─────────────────
         if self.evolution.circuit_breaker_active:
             reason = self.evolution.circuit_breaker_reason
@@ -246,6 +277,16 @@ class KratosOrchestratorV2:
                     f"  Crucix → regime:{crucix_briefing.risk_regime} "
                     f"USD:{crucix_briefing.usd_bias}"
                 )
+                # Refresh QuantDinger sentiment snapshot on same cadence as Crucix
+                try:
+                    self._sentiment_snap = fetch_sentiment_snapshot()
+                    logger.info(
+                        f"  [QD-SENTIMENT] FG={self._sentiment_snap.fear_greed} "
+                        f"VIX={self._sentiment_snap.vix:.1f} "
+                        f"DXY={self._sentiment_snap.dxy:.4f}"
+                    )
+                except Exception as _se:
+                    logger.warning(f"  QuantDinger sentiment error: {_se}")
             except Exception as e:
                 logger.warning(f"  Crucix sweep error: {e}")
         else:
@@ -264,6 +305,20 @@ class KratosOrchestratorV2:
             if isinstance(upcoming_events, Exception): upcoming_events = []
         except Exception as e:
             logger.warning(f"  OpenBB fetch error: {e}")
+
+        # Normalise candle index to UTC (AI-Trader DST-aware pattern)
+        if candle_df is not None and not isinstance(candle_df, Exception):
+            try:
+                candle_df = normalise_candle_index(candle_df)
+            except Exception as _ne:
+                logger.debug("candle index normalisation skipped: %s", _ne)
+
+        # Market-hours gate — log session for audit
+        _session = session_from_utc()
+        if not is_market_open():
+            logger.warning("  [MARKET] Forex market CLOSED (weekend) — skipping cycle")
+            return {"action": "MARKET_CLOSED", "pair": pair}
+        logger.info(f"  [SESSION] {_session.upper()}")
 
         # High-impact event guard
         if upcoming_events:
@@ -295,25 +350,58 @@ class KratosOrchestratorV2:
             f"[{mf_prediction.particle_consensus}] conf:{mf_prediction.confidence_score:.2f}"
         )
 
-        # ── STEP 7: Kronos Foundation Model Forecast ─────────────────────────
-        kronos_pred = None
+        # ── STEP 7: Kronos Foundation Model Forecast (kronos_adapter) ───────
+        # predict_batch() runs in executor (CPU-bound). Legacy adapter kept for
+        # backward compat with the Bull/Bear debate and consensus machinery.
+        kronos_pred     = None
+        kronos_pred_new = None   # type: Optional[KronosPrediction]
         if candle_df is not None and not candle_df.empty:
             try:
-                candle_df_kronos = self.kronos.build_candle_df(
-                    candle_df.reset_index().to_dict("records")
+                # New adapter — correct normalisation, batch-capable
+                loop = asyncio.get_event_loop()
+                batch_results = await loop.run_in_executor(
+                    None,
+                    lambda: kronos_predict_batch(
+                        pairs       = [pair],
+                        candle_dfs  = [candle_df],
+                        pred_len    = 10,
+                        temperature = 1.0,
+                    )
                 )
-                kronos_pred = await self.kronos.predict(
-                    symbol   = pair,
-                    candles  = candle_df_kronos,
-                    pred_len = 10,
-                )
-                logger.info(
-                    f"  Kronos → {kronos_pred.direction} "
-                    f"{kronos_pred.magnitude_pct:+.4f}% "
-                    f"conf:{kronos_pred.confidence:.2f}"
-                )
+                kronos_pred_new = batch_results[0] if batch_results else None
+
+                # Legacy adapter (for debate strings / magnitude_pct)
+                try:
+                    candle_df_kronos = self.kronos.build_candle_df(
+                        candle_df.reset_index().to_dict("records")
+                    )
+                    kronos_pred = await self.kronos.predict(
+                        symbol   = pair,
+                        candles  = candle_df_kronos,
+                        pred_len = 10,
+                    )
+                except Exception:
+                    if kronos_pred_new:
+                        from types import SimpleNamespace
+                        kronos_pred = SimpleNamespace(
+                            direction     = {"BUY": "UP", "SELL": "DOWN", "HOLD": "FLAT"}.get(
+                                               kronos_pred_new.direction, "FLAT"),
+                            confidence    = kronos_pred_new.confidence,
+                            magnitude_pct = 0.0,
+                        )
+
+                if kronos_pred_new:
+                    logger.info(
+                        f"  Kronos(new) → {kronos_pred_new.direction} "
+                        f"pred_close={kronos_pred_new.pred_close:.5f} "
+                        f"conf:{kronos_pred_new.confidence:.2f}"
+                    )
             except Exception as e:
                 logger.warning(f"  Kronos error: {e}")
+
+        # Convenience refs for consensus injection
+        _kronos_direction  = kronos_pred_new.direction  if kronos_pred_new else "HOLD"
+        _kronos_confidence = kronos_pred_new.confidence if kronos_pred_new else 0.5
 
         # ── STEP 8: DeerFlow Research (periodic deep-dive) ───────────────────
         research_brief = None
@@ -422,12 +510,40 @@ class KratosOrchestratorV2:
                 "confidence": kronos_pred.confidence,
             })
 
+        # Inject QuantDinger sentiment as score modifier (soft — not a veto)
+        _sentiment_modifier = 0.0
+        if self._sentiment_snap:
+            # VIX > 30 → reduce bull confidence; FG < 25 → fear dampener
+            if self._sentiment_snap.vix > 30:
+                _sentiment_modifier -= 0.05
+            if self._sentiment_snap.fear_greed < 25:
+                _sentiment_modifier -= 0.03
+            if self._sentiment_snap.fear_greed > 75:
+                _sentiment_modifier -= 0.03   # extreme greed = caution
+            logger.debug(f"  [SENTIMENT-MOD] modifier={_sentiment_modifier:+.3f}")
+
+        # Use new-style Kronos direction for vote injection
+        if kronos_pred_new and kronos_pred_new.direction != "HOLD":
+            # Replace/update the kronos vote with new adapter data
+            for vd in vote_dicts:
+                if vd["agent"] == "kronos":
+                    vd["signal"]     = kronos_pred_new.direction
+                    vd["confidence"] = kronos_pred_new.confidence
+                    break
+            else:
+                vote_dicts.append({
+                    "agent":      "kronos",
+                    "signal":     kronos_pred_new.direction,
+                    "confidence": kronos_pred_new.confidence,
+                })
+
         final_decision, score = self.signal_proc.compute_weighted_consensus(
             votes               = vote_dicts,
             weights             = self.agent_weights,
             mirofish_prediction = state.mirofish_prediction,
             threshold           = CONSENSUS_THRESHOLD,
         )
+        score = max(0.0, min(1.0, score + _sentiment_modifier))
 
         # Debate override if more confident
         debate_conf = float(debate_result.get("confidence", 0))
@@ -710,6 +826,29 @@ class KratosOrchestratorV2:
         )
         # R20: Audit trade close
         self.audit.log_trade_close(trade_id, pnl, trade.get("pair",""), actual_direction)
+
+        # Persist trade reflection to mempalace L3 (ChromaDB — for deep search)
+        try:
+            _l3_text = (
+                f"Cycle {self.cycle_count} | {trade.get('pair','')} | "
+                f"{trade.get('direction','')} | pnl={pnl:.2f} | "
+                f"regime={self._last_regime} | "
+                f"path={trade.get('exec_path','?')} | "
+                f"broker={trade.get('broker','?')} | "
+                f"VIX={self._sentiment_snap.vix if self._sentiment_snap else '?'} | "
+                f"FG={self._sentiment_snap.fear_greed if self._sentiment_snap else '?'}"
+            )
+            store_to_layer3(
+                text     = _l3_text,
+                metadata = {
+                    "pair":    trade.get("pair",""),
+                    "pnl":     pnl,
+                    "regime":  self._last_regime,
+                    "cycle":   self.cycle_count,
+                }
+            )
+        except Exception as _l3e:
+            logger.debug("L3 store skipped: %s", _l3e)
 
         # Record in RiskEngine for CB tracking
         cb_fired = self.risk_engine.record_outcome(pnl)
